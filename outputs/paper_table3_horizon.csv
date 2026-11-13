@@ -1,0 +1,5 @@
+horizon,best_model,rmse,r2,verdict
+1 hour,Voting(LR+RF+LGBM),3.41,0.9883,Excellent
+6 hours,XGBoost,13.64,0.8128,Useful
+24 hours,aqi_roll24_mean,31.16,0.0295,At predictability ceiling
+24 hours,XGBoost (trend feat),47.56,-1.2606,Infeasible — worse than mean

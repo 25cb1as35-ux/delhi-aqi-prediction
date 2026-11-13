@@ -1,0 +1,32 @@
+{
+  "scenario_A_churn": {
+    "best_model": "Tuned XGBoost",
+    "metric": "84.55% accuracy"
+  },
+  "scenario_B_aqi_1h": {
+    "best_model": "Voting(LR+RF+LGBM)",
+    "rmse": 3.41,
+    "r2": 0.9883
+  },
+  "scenario_B_aqi_6h": {
+    "best_model": "XGBoost",
+    "rmse": 13.64,
+    "r2": 0.8128
+  },
+  "scenario_B_aqi_24h": {
+    "best_model": "aqi_roll24_mean",
+    "rmse": 31.16,
+    "r2": 0.0295,
+    "verdict": "infeasible without external meteorological data"
+  },
+  "scenario_B_loso": {
+    "best_model": "XGBoost",
+    "rmse": 4.03,
+    "r2": 0.9968,
+    "finding": "ranking inverts vs temporal holdout"
+  },
+  "baseline_persistence_1h": {
+    "rmse": 3.9,
+    "improvement_by_best": "12.6%"
+  }
+}

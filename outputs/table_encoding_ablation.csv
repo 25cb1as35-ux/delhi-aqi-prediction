@@ -1,0 +1,5 @@
+model,tier,protocol,features,encoding,rmse,mae,r2,n_train,n_test,notes
+RF[onehot],enc_ablation,A_temporal,full,onehot,4.88,3.05,0.976,34281,11226,
+RF[ordinal],enc_ablation,A_temporal,full,ordinal,4.88,3.06,0.976,34281,11226,
+RF[target],enc_ablation,A_temporal,full,target,4.83,3.01,0.9765,34281,11226,
+RF[freq],enc_ablation,A_temporal,full,freq,4.89,3.05,0.9759,34281,11226,

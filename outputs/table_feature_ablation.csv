@@ -1,0 +1,6 @@
+model,tier,protocol,features,encoding,rmse,mae,r2,n_train,n_test,notes
+XGB[lags_only],feat_ablation,A_temporal,lags_only,onehot,5.65,3.46,0.9679,34281,11226,
+XGB[lags+roll],feat_ablation,A_temporal,lags+roll,onehot,4.48,2.86,0.9798,34281,11226,
+XGB[lags+roll+cyclic],feat_ablation,A_temporal,lags+roll+cyclic,onehot,4.14,2.52,0.9827,34281,11226,
+XGB[+momentum],feat_ablation,A_temporal,+momentum,onehot,3.45,2.1,0.988,34281,11226,
+XGB[full],feat_ablation,A_temporal,full,onehot,3.58,2.22,0.9871,34281,11226,

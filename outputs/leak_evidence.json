@@ -1,0 +1,14 @@
+{
+  "leak_test": {
+    "R2_full": 0.9808,
+    "R2_without_aqi_lag1": 0.9792,
+    "R2_without_ANY_aqi_history": -1.2747,
+    "interpretation": "no leakage; all skill from autocorrelation"
+  },
+  "weather_ablation": {
+    "with_weather": 3.58,
+    "without_weather": 3.45,
+    "delta": 0.13,
+    "interpretation": "exogenous weather features hurt"
+  }
+}

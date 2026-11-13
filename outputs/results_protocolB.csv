@@ -1,0 +1,6 @@
+model,tier,protocol,features,encoding,rmse,mae,r2,n_train,n_test,notes
+XGB[h=1h],T2,A_temporal_h1,full,onehot,3.93,2.34,0.9844,34281.0,11226,
+XGBoost,T3,B_leave_station_out,full,onehot,4.03,2.33,0.9968,,45507,"{'Anand Vihar': {'rmse': 3.96, 'mae': 2.33, 'n_test': 8445}, 'Connaught Place': {'rmse': 3.93, 'mae': 2.35, 'n_test': 8445}, 'Dwarka': {'rmse': 4.12, 'mae': 2.32, 'n_test': 6724}, 'IGI Airport': {'rmse': 3.76, 'mae': 2.2, 'n_test': 6724}, 'Okhla Phase III': {'rmse': 4.57, 'mae': 2.48, 'n_test': 6724}, 'Rohini': {'rmse': 3.86, 'mae': 2.28, 'n_test': 8445}}"
+Voting,T3,B_leave_station_out,full,onehot,4.8,2.37,0.9955,,45507,"{'Anand Vihar': {'rmse': 4.16, 'mae': 2.24, 'n_test': 8445}, 'Connaught Place': {'rmse': 3.93, 'mae': 2.2, 'n_test': 8445}, 'Dwarka': {'rmse': 5.54, 'mae': 2.5, 'n_test': 6724}, 'IGI Airport': {'rmse': 5.39, 'mae': 2.49, 'n_test': 6724}, 'Okhla Phase III': {'rmse': 5.86, 'mae': 2.64, 'n_test': 6724}, 'Rohini': {'rmse': 4.08, 'mae': 2.24, 'n_test': 8445}}"
+XGB[h=6h],T2,A_temporal_h6,full,onehot,13.64,8.52,0.8128,34281.0,11196,
+XGB[h=24h],T2,A_temporal_h24,full,onehot,36.01,24.95,-0.2963,34281.0,11088,

@@ -1,0 +1,6 @@
+model,rmse,mae,r2
+Climatology (train mean),31.7,22.83,-0.0041
+Persistence (aqi_lag24),37.04,25.0,-0.3708
+Persistence (aqi_roll24_mean),31.16,20.74,0.0295
+XGBoost (full features),36.01,24.95,-0.2963
+XGBoost (lag24 only),41.94,28.42,-0.7576

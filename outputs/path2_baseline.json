@@ -1,0 +1,12 @@
+{
+  "snapshot_date": "2026-11-13 15:21:51.477645",
+  "train_rows_1h": 34281,
+  "test_rows_1h": 11226,
+  "train_rows_24h": 34281,
+  "test_rows_24h": 11088,
+  "baseline_1h_rmse": 3.58,
+  "baseline_1h_r2": 0.9871,
+  "baseline_24h_rmse": 35.93,
+  "baseline_24h_r2": -0.2903,
+  "note": "Snapshot BEFORE Path 2. All Path 2 improvements compared to these numbers."
+}

@@ -1,0 +1,13 @@
+dimension,churn_A,aqi_B
+Task type,Binary classification,Time-series regression
+Target,Churn (0/1),AQI at t+1
+Rows × cols,"10,000 × 14","45,657 × 16"
+Data cleaning,None required,"6,903 rows removed (13.1%, AQI>500)"
+Validation,Random 80/20 k-fold,Temporal holdout + LOSO
+Imbalance handling,SMOTE,Not applicable; heavy right-skew (skew=3.53)
+Encoding,One-hot mandatory,Encoding barely matters (ΔRMSE<0.08)
+Best model,Tuned XGBoost,Voting(LR+RF+LGBM) @ 1h; XGBoost @ LOSO
+Best metric,84.55% accuracy,"RMSE 3.41, R² 0.988"
+Beats baseline by,—,12.6% over persistence
+Leakage risk,Low,High — required explicit audit
+Finding,One model wins everywhere,Best model inverts across protocols

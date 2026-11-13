@@ -1,0 +1,13 @@
+# Ignore Python cache
+__pycache__/
+*.pyc
+
+# Ignore checkpoints
+.ipynb_checkpoints/
+
+# Ignore massive raw datasets (Do NOT push the 440MB Kaggle data)
+historical_data/
+*.zip
+
+# Ignore the old version folder
+old_version/

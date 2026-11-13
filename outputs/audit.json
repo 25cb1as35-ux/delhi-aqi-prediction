@@ -1,0 +1,47 @@
+{
+  "rows": 52560,
+  "columns": 17,
+  "stations": 6,
+  "date_span": [
+    "2025-01-01 00:00:00",
+    "2025-12-31 23:00:00"
+  ],
+  "rows_per_station": {
+    "Anand Vihar": 8760,
+    "Connaught Place": 8760,
+    "Dwarka": 8760,
+    "IGI Airport": 8760,
+    "Okhla Phase III": 8760,
+    "Rohini": 8760
+  },
+  "missing_values": "none",
+  "aqi_gt_500_rows": 6903,
+  "aqi_gt_500_pct": 13.13,
+  "aqi_gt_500_by_station": {
+    "Dwarka": 2011,
+    "IGI Airport": 2011,
+    "Okhla Phase III": 2011,
+    "Anand Vihar": 290,
+    "Connaught Place": 290,
+    "Rohini": 290
+  },
+  "cardinality": {
+    "location": 6,
+    "condition_text": 11,
+    "description": 11
+  },
+  "aqi_skew": 3.529,
+  "aqi_p50": 170.0,
+  "aqi_p95": 973.0499999999956,
+  "aqi_p99": 1834.0,
+  "aqi_max": 2742.0,
+  "missing_hours_per_station": {
+    "Anand Vihar": 0,
+    "Connaught Place": 0,
+    "Dwarka": 0,
+    "IGI Airport": 0,
+    "Okhla Phase III": 0,
+    "Rohini": 0
+  },
+  "duplicate_location_dt_rows": 0
+}
