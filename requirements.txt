@@ -7,3 +7,4 @@ requests
 pydeck
 openpyxl
 plotly
+pymongo
