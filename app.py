@@ -1,38 +1,41 @@
 """
-Delhi AQI Oracle  -  premium Streamlit edition
-===============================================
+Delhi AQI Oracle  -  premium Streamlit design
+=============================================
 Pages:  Entry (clouds)  ->  Home  |  Live  |  Trends  |  Accuracy  |  Health
+
+IMPORTANT: every data / model / database line below is copied UNCHANGED from the original app.py
+(secrets, MongoDB, WAQI + Open-Meteo links, CPCB formula, Excel loader, model loading, predict + MongoDB logging).
+Only the presentation layer (layout, CSS, charts, images, navigation) is new.
 """
-import os
+import streamlit as st
+import pandas as pd
+import numpy as np
+import pickle
+import requests
+import pydeck as pdk
+import datetime
+from pathlib import Path
+import plotly.express as px
+import plotly.graph_objects as go
+
+# --- MONGODB IMPORTS ---
+from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure
+
+# design-only imports
 import io
 import math
 import base64
 import random
-import pickle
-import datetime
-from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
 
-import numpy as np
-import pandas as pd
-import requests
-import pydeck as pdk
-import plotly.graph_objects as go
-import streamlit as st
-
-try:
-    from pymongo import MongoClient
-except ImportError:         
-    MongoClient = None
+ROOT = Path(__file__).parent if "__file__" in globals() else Path.cwd()
+OUT = ROOT / "outputs"
 
 # =====================================================================
 # 1. PAGE SETUP & STATE
 # =====================================================================
 st.set_page_config(page_title="Delhi AQI Oracle", layout="wide", page_icon="🌫️",
                    initial_sidebar_state="collapsed")
-
-ROOT = Path(__file__).parent if "__file__" in globals() else Path.cwd()
-OUT = ROOT / "outputs"
 
 PAGES = ["Home", "Live Dashboard", "Historical Trends", "Model Accuracy", "Health Advisories"]
 NAV_LABELS = {"Home": "🏠 Home", "Live Dashboard": "📡 Live", "Historical Trends": "📈 Trends",
@@ -43,6 +46,7 @@ SLUGS = {"home": "Home", "live": "Live Dashboard", "trends": "Historical Trends"
 for k, v in {"entered": False, "page": "Home"}.items():
     st.session_state.setdefault(k, v)
 
+# deep links, e.g.  https://your-app/?page=health
 _qp = st.query_params.get("page")
 if _qp and str(_qp).lower() in SLUGS:
     st.session_state.page = SLUGS[str(_qp).lower()]
@@ -55,55 +59,59 @@ def now_ist():
     return (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=5, minutes=30)).replace(tzinfo=None)
 
 
+
 # =====================================================================
-# 2. SECRETS & DATABASE
+# 2. ORIGINAL: SECRETS & DATABASE  (unchanged)
 # =====================================================================
-def _secret(name, default=""):
-    try:
-        return st.secrets[name]
-    except Exception:
-        return os.environ.get(name, default)
+# --- 2. SECRETS & DATABASE ---
+try:
+    WAQI_TOKEN = st.secrets["WAQI_TOKEN"]
+    MONGO_URL = st.secrets["MONGO_URL"]
+except Exception:
+    # REPLACE THESE WITH YOUR ACTUAL KEYS FOR LOCAL TESTING
+    WAQI_TOKEN = "YOUR_WAQI_TOKEN_HERE"
+    MONGO_URL = "YOUR_MONGO_URL_HERE" 
 
-WAQI_TOKEN = _secret("WAQI_TOKEN", "YOU_WAQI_TOKEN_HERE")
-MONGO_URL = _secret("MONGO_URL", "YOUR_MONGO_URL_HERE")  
-
-WAQI_CONVERT_TO_UG = True
-
-def _is_configured(value):
-    return bool(value) and "YOUR_" not in str(value)
-
-@st.cache_resource(show_spinner=False)
+@st.cache_resource
 def get_database():
-    """Returns the MongoDB collection, or None if Mongo is not reachable."""
-    if MongoClient is None or not _is_configured(MONGO_URL):
-        return None
     try:
-        client = MongoClient(MONGO_URL, serverSelectionTimeoutMS=4000)
-        client.admin.command("ping")
-        return client.aqi_database.predictions
-    except Exception:
-        return None
-
+        client = MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000)
+        db = client.aqi_database
+        return db.predictions
+    except ConnectionFailure:
+        st.error("Failed to connect to MongoDB. Check your URL and Password.")
+        st.stop()
 
 predictions_collection = get_database()
 
 LOCATIONS_DATA = {
-    "Anand Vihar": {"coords": (28.6469, 77.3160), "pincode": "110092", "file": "anand_vihar.xlsx",
-                    "district": "East Delhi", "story": "an inter-state bus terminal and highway junction"},
-    "Dwarka": {"coords": (28.5921, 77.0460), "pincode": "110075", "file": "dwarka.xlsx",
-               "district": "South West Delhi", "story": "a planned residential sub-city"},
-    "IGI Airport": {"coords": (28.5562, 77.1000), "pincode": "110037", "file": "igi_airport.xlsx",
-                    "district": "South West Delhi", "story": "India's busiest airport"},
-    "Okhla Phase III": {"coords": (28.5432, 77.2725), "pincode": "110020", "file": "okhla.xlsx",
-                        "district": "South East Delhi", "story": "an industrial estate"},
-    "Rohini": {"coords": (28.7320, 77.1123), "pincode": "110085", "file": "rohini.xlsx",
-               "district": "North West Delhi", "story": "a dense residential grid"},
+    "Anand Vihar": {"coords": (28.6469, 77.3160), "pincode": "110092", "file": "anand_vihar.xlsx"},
+    "Dwarka": {"coords": (28.5921, 77.0460), "pincode": "110075", "file": "dwarka.xlsx"},
+    "IGI Airport": {"coords": (28.5562, 77.1000), "pincode": "110037", "file": "igi_airport.xlsx"},
+    "Okhla Phase III": {"coords": (28.5432, 77.2725), "pincode": "110020", "file": "okhla.xlsx"},
+    "Rohini": {"coords": (28.7320, 77.1123), "pincode": "110085", "file": "rohini.xlsx"}
 }
 ALL_LOCATIONS = list(LOCATIONS_DATA.keys())
+
+# ---- design-only extras (display text; the original LOCATIONS_DATA above is untouched) ----
+STATION_INFO = {
+    "Anand Vihar": {"district": "East Delhi", "story": "an inter-state bus terminal and highway junction"},
+    "Dwarka": {"district": "South West Delhi", "story": "a planned residential sub-city"},
+    "IGI Airport": {"district": "South West Delhi", "story": "India's busiest airport"},
+    "Okhla Phase III": {"district": "South East Delhi", "story": "an industrial estate"},
+    "Rohini": {"district": "North West Delhi", "story": "a dense residential grid"},
+}
+
+
+def station_meta(name):
+    """Original LOCATIONS_DATA entry + display-only text (returns a new dict, original is not modified)."""
+    return {**LOCATIONS_DATA[name], **STATION_INFO.get(name, {})}
+
+
 st.session_state.setdefault("station", ALL_LOCATIONS[0])
 
 # =====================================================================
-# 3. AQI SCIENCE  (official CPCB 6-tier scale)
+# 3. AQI COLOUR SCALE (design)  +  ORIGINAL MODELS & MATH
 # =====================================================================
 CATEGORIES = [  # (upper bound, name, colour, CPCB health impact)
     (50, "Good", "#00b050", "Minimal impact."),
@@ -137,6 +145,15 @@ BANDS = [(0, 50, "#00b050"), (50, 100, "#92d050"), (100, 200, "#ffd60a"),
 SAFE_PM25, SAFE_PM10 = 60, 100   # India NAAQS 24-hour standards, µg/m³
 
 
+
+# --- 3. LOAD MODELS & MATH ---
+@st.cache_resource
+def load_models():
+    with open(OUT / "best_model_1h_final.pkl", "rb") as f: b1 = pickle.load(f)
+    with open(OUT / "best_model_6h_final.pkl", "rb") as f: b6 = pickle.load(f)
+    with open(OUT / "best_model_24h_final.pkl", "rb") as f: b24 = pickle.load(f)
+    return b1["model"], b1["columns"], b6["model"], b6["columns"], b24["model"], b24["columns"]
+
 def calculate_cpcb_aqi(pm25, pm10):
     if pm25 <= 30: aqi_25 = pm25 * 50 / 30
     elif pm25 <= 60: aqi_25 = 50 + (pm25 - 30) * 50 / 30
@@ -151,22 +168,6 @@ def calculate_cpcb_aqi(pm25, pm10):
     elif pm10 <= 430: aqi_10 = 300 + (pm10 - 350) * 100 / 80
     else: aqi_10 = 400 + (pm10 - 430) * 100 / 80
     return max(aqi_25, aqi_10)
-
-
-_US_BP = {  # US-EPA breakpoints used by WAQI: (C_lo, C_hi, I_lo, I_hi)
-    "pm25": [(0.0, 12.0, 0, 50), (12.1, 35.4, 51, 100), (35.5, 55.4, 101, 150), (55.5, 150.4, 151, 200),
-             (150.5, 250.4, 201, 300), (250.5, 350.4, 301, 400), (350.5, 500.4, 401, 500)],
-    "pm10": [(0, 54, 0, 50), (55, 154, 51, 100), (155, 254, 101, 150), (255, 354, 151, 200),
-             (355, 424, 201, 300), (425, 504, 301, 400), (505, 604, 401, 500)],
-}
-
-
-def us_aqi_to_conc(aqi, pollutant):
-    for c_lo, c_hi, i_lo, i_hi in _US_BP[pollutant]:
-        if aqi <= i_hi:
-            return c_lo + (aqi - i_lo) * (c_hi - c_lo) / (i_hi - i_lo)
-    c_lo, c_hi, i_lo, i_hi = _US_BP[pollutant][-1]
-    return c_lo + (aqi - i_lo) * (c_hi - c_lo) / (i_hi - i_lo)
 
 
 def cat_index(aqi):
@@ -201,123 +202,46 @@ def scale_color(aqi):
     return AQI_SCALE[-1][1]
 
 
-# =====================================================================
-# 4. MODELS
-# =====================================================================
-@st.cache_resource(show_spinner=False)
-def load_models():
-    try:
-        with open(OUT / "best_model_1h_final.pkl", "rb") as f: b1 = pickle.load(f)
-        with open(OUT / "best_model_6h_final.pkl", "rb") as f: b6 = pickle.load(f)
-        with open(OUT / "best_model_24h_final.pkl", "rb") as f: b24 = pickle.load(f)
-        return b1["model"], b1["columns"], b6["model"], b6["columns"], b24["model"], b24["columns"]
-    except Exception:
-        return None
-
-
-@st.cache_resource(show_spinner=False)
-def load_clean():
-    return pd.read_pickle(OUT / "clean.pkl")
-
 
 # =====================================================================
-# 5. DATA FETCHING
+# 4. ORIGINAL: FETCH & PREDICT  (unchanged)
 # =====================================================================
-AQ_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
-
-
-def _fetch_station(name, info, wx_now, wx_6h, wx_24h):
-    lat, lon = info["coords"]
-    # --- Primary source: WAQI ---
-    if _is_configured(WAQI_TOKEN):
-        try:
-            url = f"https://api.waqi.info/feed/geo:{lat};{lon}/?token={WAQI_TOKEN}"
-            res = requests.get(url, timeout=4).json()
-            if res["status"] == "ok":
-                iaqi = res["data"]["iaqi"]
-                pm25 = float(iaqi.get("pm25", {}).get("v", 0))
-                pm10 = float(iaqi.get("pm10", {}).get("v", 0))
-                if WAQI_CONVERT_TO_UG:
-                    pm25, pm10 = us_aqi_to_conc(pm25, "pm25"), us_aqi_to_conc(pm10, "pm10")
-                return name, {
-                    "aqi": calculate_cpcb_aqi(pm25, pm10),
-                    "temp": float(iaqi.get("t", {}).get("v", wx_now["temp"])),
-                    "wind": float(iaqi.get("w", {}).get("v", wx_now["wind"])),
-                    "humidity": float(iaqi.get("h", {}).get("v", wx_now["humidity"])),
-                    "pm25": pm25, "pm10": pm10, "wx_6h": wx_6h, "wx_24h": wx_24h, "source": "WAQI",
-                }
-        except Exception:
-            pass
-    # --- Fallback: Open-Meteo air quality (free, no key needed) ---
-    try:
-        aq = requests.get(AQ_URL, params={"latitude": lat, "longitude": lon, "current": "pm10,pm2_5"},
-                          timeout=6).json()["current"]
-        pm25, pm10 = float(aq["pm2_5"]), float(aq["pm10"])
-        return name, {
-            "aqi": calculate_cpcb_aqi(pm25, pm10), "temp": wx_now["temp"], "wind": wx_now["wind"],
-            "humidity": wx_now["humidity"], "pm25": pm25, "pm10": pm10,
-            "wx_6h": wx_6h, "wx_24h": wx_24h, "source": "Open-Meteo",
-        }
-    except Exception:
-        return name, None
-
-
-@st.cache_data(ttl=900, show_spinner=False)
+# --- 4. FETCH & PREDICT ---
+@st.cache_data(ttl=900)
 def get_live_data():
+    data = {}
     try:
-        wx_url = ("https://api.open-meteo.com/v1/forecast?latitude=28.6139&longitude=77.2090"
-                  "&hourly=temperature_2m,wind_speed_10m"
-                  "&current=temperature_2m,wind_speed_10m,relative_humidity_2m&forecast_days=2")
-        wx_json = requests.get(wx_url, timeout=6).json()
-        wx_res = wx_json["hourly"]
+        wx_url = "https://api.open-meteo.com/v1/forecast?latitude=28.6139&longitude=77.2090&hourly=temperature_2m,wind_speed_10m&forecast_days=2"
+        wx_res = requests.get(wx_url, timeout=5).json()["hourly"]
         wx_6h = {"temp": float(wx_res["temperature_2m"][6]), "wind": float(wx_res["wind_speed_10m"][6])}
         wx_24h = {"temp": float(wx_res["temperature_2m"][24]), "wind": float(wx_res["wind_speed_10m"][24])}
-        cur = wx_json.get("current", {})
-        wx_now = {"temp": float(cur.get("temperature_2m", 25.0)), "wind": float(cur.get("wind_speed_10m", 5.0)),
-                  "humidity": float(cur.get("relative_humidity_2m", 60.0))}
-    except Exception:
+    except:
         wx_6h = wx_24h = {"temp": 25.0, "wind": 5.0}
-        wx_now = {"temp": 25.0, "wind": 5.0, "humidity": 60.0}
 
-    with ThreadPoolExecutor(max_workers=5) as pool:  # all stations in parallel
-        results = list(pool.map(lambda kv: _fetch_station(kv[0], kv[1], wx_now, wx_6h, wx_24h),
-                                LOCATIONS_DATA.items()))
-    data = {name: d for name, d in results if d}
-    return data, now_ist().strftime("%d %b, %I:%M %p IST")
+    for name, info in LOCATIONS_DATA.items():
+        lat, lon = info["coords"]
+        try:
+            url = f"https://api.waqi.info/feed/geo:{lat};{lon}/?token={WAQI_TOKEN}"
+            res = requests.get(url, timeout=3).json()
+            if res["status"] == "ok":
+                d = res["data"]
+                live_temp = float(d["iaqi"].get("t", {}).get("v", 25.0))
+                live_wind = float(d["iaqi"].get("w", {}).get("v", 5.0))
+                pm25 = float(d["iaqi"].get("pm25", {}).get("v", 0))
+                pm10 = float(d["iaqi"].get("pm10", {}).get("v", 0))
+                official_aqi = calculate_cpcb_aqi(pm25, pm10)
+                data[name] = {
+                    "aqi": official_aqi, "temp": live_temp, "wind": live_wind, 
+                    "pm25": pm25, "pm10": pm10, "wx_6h": wx_6h, "wx_24h": wx_24h
+                }
+        except: pass
+    return data
 
-
-@st.cache_data(ttl=1800, show_spinner=False)
-def get_station_hourly(lat, lon):
-    """Past 7 days + next 2 days of hourly PM from the CAMS model (Open-Meteo)."""
-    try:
-        r = requests.get(AQ_URL, params={"latitude": lat, "longitude": lon, "hourly": "pm10,pm2_5",
-                                         "past_days": 7, "forecast_days": 2, "timezone": "Asia/Kolkata"},
-                         timeout=8).json()["hourly"]
-        df = pd.DataFrame({"dt": pd.to_datetime(r["time"]), "pm25": r["pm2_5"], "pm10": r["pm10"]}).dropna()
-        df["aqi"] = [calculate_cpcb_aqi(a, b) for a, b in zip(df["pm25"], df["pm10"])]
-        return df
-    except Exception:
-        return None
-
-
-def _parse_dates(col):
-    """CPCB exports use dd-mm-yyyy. Use day-first parsing only when it reads more rows
-    than the default parser (so files that already worked behave exactly as before)."""
-    if pd.api.types.is_datetime64_any_dtype(col):
-        return col
-    default = pd.to_datetime(col, errors="coerce")
-    try:
-        dayfirst = pd.to_datetime(col.astype(str), errors="coerce", dayfirst=True, format="mixed")
-    except Exception:
-        return default
-    return dayfirst if dayfirst.notna().sum() > default.notna().sum() else default
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=3600)
 def load_station_excel(file_name):
     file_path = ROOT / file_name
     if not file_path.exists(): return None
-
+    
     df_raw = pd.read_excel(file_path, header=None)
     header_row = 0
     for i in range(min(15, len(df_raw))):
@@ -325,34 +249,29 @@ def load_station_excel(file_name):
         if 'date' in row_str and ('pm2.5' in row_str or 'pm25' in row_str):
             header_row = i
             break
-
+            
     df = pd.read_excel(file_path, header=header_row)
     df.columns = [str(c).lower().strip() for c in df.columns]
     time_col = [c for c in df.columns if 'date' in c or 'time' in c][0]
     pm25_col = [c for c in df.columns if 'pm2.5' in c or 'pm25' in c][0]
-
+    
     df = df[[time_col, pm25_col]].rename(columns={time_col: "dt", pm25_col: "pm2_5"})
-    df["dt"] = _parse_dates(df["dt"])
+    df["dt"] = pd.to_datetime(df["dt"], errors='coerce')
     df["pm2_5"] = pd.to_numeric(df["pm2_5"], errors='coerce')
     df = df.dropna()
-    df = df[df["pm2_5"] > 0]
-
+    df = df[df["pm2_5"] > 0] 
+    
     df = df.set_index("dt").resample("1h").mean().reset_index()
     df["aqi_index"] = df["pm2_5"].apply(lambda x: calculate_cpcb_aqi(x, 0))
     return df
 
-
-@st.cache_data(ttl=900, show_spinner=False)
-def predict(station_name, live_weather, _m1, _c1, _m6, _c6, _m24, _c24):
-    """Your original prediction logic. Cached 15 min per live reading so that clicking
-    around the nav bar does not log duplicate rows into MongoDB."""
-    m1, c1, m6, c6, m24, c24 = _m1, _c1, _m6, _c6, _m24, _c24
-    clean = load_clean()
+def predict(station_name, live_weather, m1, c1, m6, c6, m24, c24):
+    clean = pd.read_pickle(OUT / "clean.pkl")
     df = clean.loc[station_name].copy()
-
+    
     for col in ['aqi_index', 'temp_c', 'humidity', 'windspeed_kph']:
         if col in df.columns: df[col] = df[col].astype(float)
-
+    
     for i in range(1, 25):
         if len(df) >= i:
             df.iloc[-i, df.columns.get_loc('aqi_index')] = live_weather['aqi']
@@ -362,9 +281,9 @@ def predict(station_name, live_weather, _m1, _c1, _m6, _c6, _m24, _c24):
     g = df.copy()
     for L in (1, 3, 6, 12, 24): g[f"aqi_lag{L}"] = g.aqi_index.shift(L)
     t = g.index
-    g["hour"] = t.hour; g["month"] = t.month; g["dow"] = t.dayofweek
-    g["hour_sin"] = np.sin(2 * np.pi * t.hour / 24); g["hour_cos"] = np.cos(2 * np.pi * t.hour / 24)
-
+    g["hour"]=t.hour; g["month"]=t.month; g["dow"]=t.dayofweek
+    g["hour_sin"]=np.sin(2*np.pi*t.hour/24); g["hour_cos"]=np.cos(2*np.pi*t.hour/24)
+    
     last_row = g.iloc[[-1]].copy()
     for loc in ALL_LOCATIONS:
         last_row[f"location_{loc}"] = 1 if loc == station_name else 0
@@ -374,57 +293,60 @@ def predict(station_name, live_weather, _m1, _c1, _m6, _c6, _m24, _c24):
         last_row[f"future_wind_{horizon}h"] = f_wind
         last_row[f"future_temp_{horizon}h"] = f_temp
         X = last_row.reindex(columns=cols, fill_value=0).select_dtypes(include=[np.number])
-        return float(model.predict(X)[0])
+        return model.predict(X)[0]
 
     p1 = run_pred(m1, c1, 1, live_weather['wind'], live_weather['temp'])
     p6 = run_pred(m6, c6, 6, live_weather['wx_6h']['wind'], live_weather['wx_6h']['temp'])
     p24 = run_pred(m24, c24, 24, live_weather['wx_24h']['wind'], live_weather['wx_24h']['temp'])
-
-    db_msg = None
-    if predictions_collection is not None:  # SAVE TO MONGODB
-        try:
-            predictions_collection.insert_one({
-                "timestamp": datetime.datetime.now(), "location": station_name,
-                "actual_aqi": live_weather['aqi'], "pred_1h": p1, "pred_6h": p6, "pred_24h": p24,
-            })
-            load_prediction_log.clear()
-        except Exception as e:
-            db_msg = f"Failed to save to database: {e}"
-    return p1, p6, p24, db_msg
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def load_prediction_log():
-    if predictions_collection is None:
-        return None
+    
+    # SAVE TO MONGODB
     try:
-        df = pd.DataFrame(list(predictions_collection.find({}, {"_id": 0}).sort("timestamp", 1)))
-        if not df.empty:
-            df["timestamp"] = pd.to_datetime(df["timestamp"])
-        return df
-    except Exception:
-        return pd.DataFrame()
+        predictions_collection.insert_one({
+            "timestamp": datetime.datetime.now(),
+            "location": station_name,
+            "actual_aqi": live_weather['aqi'],
+            "pred_1h": float(p1),
+            "pred_6h": float(p6),
+            "pred_24h": float(p24)
+        })
+    except Exception as e:
+        st.error(f"Failed to save to database: {e}")
+    
+    return p1, p6, p24
 
 
-def horizon_eval(df_station, h):
-    """Compare each h-hour prediction with the actual AQI logged ~h hours later.
-    Falls back to same-time comparison when there is not enough history yet."""
-    col = f"pred_{h}h"
-    if df_station is None or col not in df_station or len(df_station) < 2:
-        return None, None
-    preds = df_station[["timestamp", col]].dropna().copy()
-    preds["target"] = preds["timestamp"] + pd.Timedelta(hours=h)
-    acts = df_station[["timestamp", "actual_aqi"]].rename(columns={"timestamp": "target"}).sort_values("target")
-    tol = pd.Timedelta(minutes={1: 40, 6: 90}.get(h, 180))
-    m = pd.merge_asof(preds.sort_values("target"), acts, on="target", direction="nearest", tolerance=tol)
-    m = m.dropna(subset=["actual_aqi"]).rename(columns={col: "pred"})
-    method = "aligned"
-    if len(m) < 3:
-        m = df_station[["timestamp", col, "actual_aqi"]].dropna().rename(columns={col: "pred"})
-        m["target"] = m["timestamp"]
-        method = "same-time"
-    m["err"] = m["actual_aqi"] - m["pred"]
-    return m, method
+# =====================================================================
+# 5. DESIGN HELPERS AROUND THE ORIGINAL FUNCTIONS (no data logic changed)
+# =====================================================================
+def read_prediction_log():
+    """Same MongoDB read as the original Model Accuracy page."""
+    try:
+        cursor = predictions_collection.find().sort("timestamp", 1)
+        df_log = pd.DataFrame(list(cursor))
+    except Exception as e:
+        st.error(f"Could not load data from MongoDB: {e}")
+        df_log = pd.DataFrame()
+    if not df_log.empty:
+        df_log['timestamp'] = pd.to_datetime(df_log['timestamp'])
+    return df_log
+
+
+def predict_once(station_name, live_weather):
+    """Calls the ORIGINAL predict() (which also saves to MongoDB).
+    The new design has extra buttons/toggles on the Live page and Streamlit re-runs the script on every click,
+    so the result is remembered per live reading for this browser session - otherwise one visit would
+    write many duplicate rows into MongoDB. A new live reading (or a new visit) logs a new prediction, as before."""
+    key = (station_name, float(live_weather["aqi"]), float(live_weather["temp"]), float(live_weather["wind"]))
+    store = st.session_state.setdefault("_pred_store", {})
+    if key not in store:
+        store[key] = predict(station_name, live_weather, m1, c1, m6, c6, m24, c24)
+    return store[key]
+
+
+@st.cache_data(ttl=900)
+def live_fetched_at():
+    """Display-only: time of the current 15-minute live-data window."""
+    return now_ist().strftime("%d %b, %I:%M %p IST")
 
 
 # =====================================================================
@@ -530,9 +452,10 @@ def style_fig(fig, height=360):
         font=dict(color="#cbd5e1", family="Poppins, Inter, sans-serif", size=12),
         hoverlabel=dict(bgcolor="rgba(15,23,42,.95)", bordercolor="rgba(255,255,255,.15)",
                         font=dict(color="white", family="Poppins, sans-serif")),
-        legend=dict(orientation="h", y=1.02, yanchor="bottom", x=0, bgcolor="rgba(0,0,0,0)"),
-        xaxis=dict(gridcolor="rgba(255,255,255,.05)", zeroline=False, linecolor="rgba(255,255,255,.1)"),
-        yaxis=dict(gridcolor="rgba(255,255,255,.07)", zeroline=False),
+        legend=dict(orientation="h", y=1.02, yanchor="bottom", x=0, bgcolor="rgba(0,0,0,0)", font=dict(color="#e2e8f0", size=12)),
+        xaxis=dict(gridcolor="rgba(255,255,255,.05)", zeroline=False, linecolor="rgba(255,255,255,.1)",
+                   tickfont=dict(color="#94a3b8"), title_font=dict(color="#94a3b8")),
+        yaxis=dict(gridcolor="rgba(255,255,255,.07)", zeroline=False, tickfont=dict(color="#94a3b8"), title_font=dict(color="#94a3b8")),
     )
     return fig
 
@@ -1119,7 +1042,7 @@ if not st.session_state.entered:
     with mid:
         with st.container(key="enter_btn"):
             wide_button("Enter & reveal the truth  →", key="enter", on_click=enter_site)
-    live_data, _upd = get_live_data()          # fetched AFTER the page is drawn
+    live_data = get_live_data()          # original fetch (runs after the page is drawn)
     if live_data:
         avg = float(np.mean([v["aqi"] for v in live_data.values()]))
         c, tag = get_theme(avg)
@@ -1150,9 +1073,10 @@ with st.container(key="topnav"):
 
 page = st.session_state.page
 station = st.session_state.station
-models = load_models()
-live_data, updated_at = get_live_data()
-log_df = load_prediction_log()
+m1, c1, m6, c6, m24, c24 = load_models()
+live_data = get_live_data()
+models = (m1, c1, m6, c6, m24, c24)
+updated_at = live_fetched_at()
 
 
 def need_live(station_name):
@@ -1164,13 +1088,13 @@ def need_live(station_name):
 
 
 def station_log(name):
-    if log_df is None or log_df.empty or "location" not in log_df:
+    df_log = read_prediction_log()
+    if df_log.empty or "location" not in df_log:
         return None
-    return log_df[log_df["location"] == name].sort_values("timestamp").copy()
+    return df_log[df_log['location'] == name].sort_values('timestamp').copy()
 
 
 def footer():
-    srcs = sorted({v.get("source", "WAQI") for v in live_data.values()}) or ["—"]
     links = "".join(f'<a href="?page={s}" target="_self">{NAV_LABELS[p]}</a>' for s, p in SLUGS.items())
     stations = "".join(f'<span class="li">{n} · {d["pincode"]}</span>' for n, d in LOCATIONS_DATA.items())
     html(f"""
@@ -1181,7 +1105,7 @@ def footer():
         <div><h5>Explore</h5>{links}</div>
         <div><h5>Stations</h5>{stations}</div>
     </div>
-    <div class="fine">Live data: {", ".join(srcs)} · Weather & hourly model data: Open-Meteo / CAMS · AQI on the CPCB (India) scale ·
+    <div class="fine">Live data: WAQI (aqicn.org) · Forecast weather: Open-Meteo · History: official CPCB station files · AQI on the CPCB (India) scale ·
     Updated {updated_at}<br>Not medical advice. Made with 💙 for cleaner Delhi air.</div>""")
 
 
@@ -1228,7 +1152,7 @@ if page == "Home":
     for i, (n, v) in enumerate(sorted(live_data.items(), key=lambda kv: -kv[1]["aqi"])):
         c = get_theme(v["aqi"])[0]
         rows += f"""<div class="rank-row" style="--c:{c};animation-delay:{i * 90}ms"><div class="aqi-box">{v['aqi']:.0f}</div>
-            <div><div class="rank-name">{n}</div><div class="rank-sub">{LOCATIONS_DATA[n]['pincode']} · {LOCATIONS_DATA[n]['district']}</div></div>
+            <div><div class="rank-name">{n}</div><div class="rank-sub">{LOCATIONS_DATA[n]['pincode']} · {STATION_INFO[n]['district']}</div></div>
             <div class="bar" style="--c:{c};margin:0"><div style="width:{min(v['aqi'], 500) / 5:.0f}%;animation-delay:{i * 120}ms"></div></div></div>"""
     html(f"""
     <div class="skyline" style="--haze:{haze * 0.55:.2f};--blur:{haze * 4:.1f}px">
@@ -1281,7 +1205,7 @@ if page == "Home":
                 <div class="kv"><span>PM10</span><b>{d['pm10']:.1f} µg/m³</b></div>
                 <div class="kv"><span>Temperature</span><b>{d['temp']:.1f} °C</b></div>
                 <div class="kv"><span>Wind</span><b>{d['wind']:.1f} km/h</b></div>
-                <div class="kv"><span>Humidity</span><b>{d['humidity']:.0f}%</b></div>
+                <div class="kv"><span>Cigarette equivalent</span><b>{d['pm25'] / 22:.1f} / day</b></div>
                 <div class="eyebrow-sm" style="margin-top:.6rem">Observed {updated_at}</div></div>""")
     with right:
         html(f'<div class="glass fade-up" style="height:100%"><div class="eyebrow-sm">What moves the number</div>'
@@ -1296,7 +1220,7 @@ if page == "Home":
 # =====================================================================
 elif page == "Live Dashboard":
     d = need_live(station)
-    info = LOCATIONS_DATA[station]
+    info = station_meta(station)
     current_aqi, pm25, pm10 = d["aqi"], d["pm25"], d["pm10"]
     color, tag = get_theme(current_aqi)
     verdict, advice = VERDICTS[tag]
@@ -1308,7 +1232,7 @@ elif page == "Live Dashboard":
     with h2c:
         with st.container(key="ghost_refresh"):
             if wide_button("🔄 Refresh", key="refresh"):
-                get_live_data.clear(); get_station_hourly.clear()
+                get_live_data.clear(); live_fetched_at.clear()
                 st.rerun()
 
     # ---------- hero ----------
@@ -1320,7 +1244,7 @@ elif page == "Live Dashboard":
         {particles(int(np.clip(current_aqi / 5, 10, 90)), seed=int(current_aqi) + 3, rgb=dust_rgb, max_size=6.5, rise=180)}
         <div class="hero-content">
             <div class="hero-left">
-                <span class="live-badge"><span class="live-dot"></span>Live reading · {d.get('source', 'WAQI')}</span>
+                <span class="live-badge"><span class="live-dot"></span>Live reading · WAQI</span>
                 <h1 class="station">{station}</h1>
                 <div class="meta">📍 New Delhi {info['pincode']} · {info['district']} &nbsp;·&nbsp; 🕒 Updated {updated_at}</div>
                 <div class="verdict-eb">Oracle verdict</div>
@@ -1329,7 +1253,6 @@ elif page == "Live Dashboard":
                 <div class="chips">
                     <div class="chip"><span>🌡️ Temp</span><b>{d['temp']:.1f} <small>°C</small></b></div>
                     <div class="chip"><span>💨 Wind</span><b>{d['wind']:.1f} <small>km/h</small></b></div>
-                    <div class="chip"><span>💧 Humidity</span><b>{d['humidity']:.0f} <small>%</small></b></div>
                     <div class="chip"><span>PM2.5</span><b>{pm25:.0f} <small>µg/m³</small></b></div>
                     <div class="chip"><span>PM10</span><b>{pm10:.0f} <small>µg/m³</small></b></div>
                 </div>
@@ -1376,83 +1299,83 @@ elif page == "Live Dashboard":
             <div class="cig-icons">{icons}</div>
             <div class="card-sub">A rough equivalence for a full day outdoors in {station} (PM2.5 ÷ 22, Berkeley Earth).</div>{recs}</div>""")
 
-    # ---------- AI forecast ----------
+    # ---------- AI forecast (ORIGINAL predict + MongoDB logging) ----------
+    preds = None
+    pred_err = None
+    try:
+        p1, p6, p24 = predict_once(station, live_data[station])
+        preds = (float(p1), float(p6), float(p24))
+    except Exception as e:
+        pred_err = e
     s_log = station_log(station)
-    m1h, meth = horizon_eval(s_log, 1)
     conf_html = ""
-    if m1h is not None and len(m1h) >= 3:
-        conf = float(np.clip(100 * (1 - m1h["err"].abs().mean() / max(m1h["actual_aqi"].mean(), 1)), 0, 99))
+    if s_log is not None and len(s_log) >= 2:
+        _err = abs(s_log['actual_aqi'] - s_log['pred_1h'])          # original MAE formula
+        conf = float(np.clip(100 * (1 - _err.mean() / max(s_log['actual_aqi'].mean(), 1)), 0, 99))
         conf_html = (f'<div class="conf"><span class="k">CONFIDENCE</span><b>{conf:.0f}%</b>'
                      f'<div class="t"><div style="width:{conf:.0f}%"></div></div></div>')
     section("The next 24 hours", "XGBoost forecasts for +1h, +6h and +24h", "🔮", eyebrow="AI forecast · gradient boosted trees", right=conf_html)
-    preds = None
-    if models is None:
-        st.info("🧠 Model files were not found in `outputs/`, so AI forecasts are hidden. Add `best_model_1h_final.pkl`, "
-                "`best_model_6h_final.pkl`, `best_model_24h_final.pkl` and `clean.pkl`.")
+    if pred_err is not None:
+        st.error(f"Prediction failed: {pred_err}")
     else:
-        try:
-            p1, p6, p24, db_msg = predict(station, d, *models)
-            preds = (p1, p6, p24)
-            if db_msg:
-                st.error(db_msg)
-            notes = ["Immediate street-level outlook", "Evening traffic + inversion window" if now_ist().hour < 15 else "Overnight cooling window",
-                     "Tomorrow, same hour"]
-            cards = []
-            for i, (lbl, val) in enumerate([("Next 1 hour", p1), ("Next 6 hours", p6), ("Next 24 hours", p24)]):
-                c = get_theme(val)[0]
-                delta = val - current_aqi
-                dcol, dbg, arrow = ("#fca5a5", "rgba(239,68,68,.15)", "▲") if delta > 0 else ("#86efac", "rgba(34,197,94,.15)", "▼")
-                cards.append(f"""<div class="fc fade-up" style="--c:{c};animation-delay:{i * 120}ms">
-                    <div class="fc-top"><span class="fc-h">{lbl}</span><span class="fc-delta" style="color:{dcol};background:{dbg}">{arrow} {abs(delta):.0f}</span></div>
-                    <div class="fc-v">{val:.0f}</div><div class="bar"><div style="width:{min(val, 500) / 5:.1f}%"></div></div>
-                    <div class="fc-note">{get_theme(val)[1]} · {notes[i]}</div></div>""")
-            trend24 = p24 - current_aqi
-            html('<div class="fc-grid">' + "".join(cards) + "</div>"
-                 f"""<div class="mini-chips"><span>Wind dispersion (6h)<b>{d['wx_6h']['wind']:.1f} km/h</b></span>
-                 <span>Temperature (6h)<b class="warm">{d['wx_6h']['temp']:.1f} °C</b></span>
-                 <span>24h trend<b style="color:{'#fca5a5' if trend24 > 0 else '#86efac'}">{trend24:+.0f} AQI</b></span></div>""")
-        except Exception as e:
-            st.error(f"Prediction failed: {e}")
+        p1, p6, p24 = preds
+        notes = ["Immediate street-level outlook", "Evening traffic + inversion window" if now_ist().hour < 15 else "Overnight cooling window",
+                 "Tomorrow, same hour"]
+        cards = []
+        for i, (lbl, val) in enumerate([("Next 1 hour", p1), ("Next 6 hours", p6), ("Next 24 hours", p24)]):
+            c = get_theme(val)[0]
+            delta = val - current_aqi
+            dcol, dbg, arrow = ("#fca5a5", "rgba(239,68,68,.15)", "▲") if delta > 0 else ("#86efac", "rgba(34,197,94,.15)", "▼")
+            cards.append(f"""<div class="fc fade-up" style="--c:{c};animation-delay:{i * 120}ms">
+                <div class="fc-top"><span class="fc-h">{lbl}</span><span class="fc-delta" style="color:{dcol};background:{dbg}">{arrow} {abs(delta):.0f}</span></div>
+                <div class="fc-v">{val:.0f}</div><div class="bar"><div style="width:{min(val, 500) / 5:.1f}%"></div></div>
+                <div class="fc-note">{get_theme(val)[1]} · {notes[i]}</div></div>""")
+        trend24 = p24 - current_aqi
+        html('<div class="fc-grid">' + "".join(cards) + "</div>"
+             f"""<div class="mini-chips"><span>Wind dispersion (6h)<b>{d['wx_6h']['wind']:.1f} km/h</b></span>
+             <span>Temperature (6h)<b class="warm">{d['wx_6h']['temp']:.1f} °C</b></span>
+             <span>24h trend<b style="color:{'#fca5a5' if trend24 > 0 else '#86efac'}">{trend24:+.0f} AQI</b></span></div>""")
     lc, _ = st.columns([1, 3])
     with lc:
         cta("How accurate is this?  →", "Model Accuracy", "acc_link", style="link")
 
-    # ---------- shape of today's air ----------
-    hourly = get_station_hourly(*info["coords"])
-    now = now_ist()
-    if hourly is not None and not hourly.empty:
-        past = hourly[(hourly["dt"] <= now) & (hourly["dt"] > now - datetime.timedelta(hours=24))]
-        fut = hourly[(hourly["dt"] > now) & (hourly["dt"] <= now + datetime.timedelta(hours=24))]
-        fig = go.Figure()
-        ymax = max([current_aqi] + list(hourly["aqi"].tail(24 * 9)) + (list(preds) if preds else [])) * 1.18 + 10
-        add_category_lines(fig, ymax)
-        fig.add_trace(go.Scatter(x=past["dt"], y=past["aqi"], name="Past 24h · model", mode="lines",
-                                 line=dict(color="#f87171", width=3, shape="spline"), fill="tozeroy",
+    # ---------- shape of today's air (your logged WAQI readings + Oracle forecast) ----------
+    now_srv = datetime.datetime.now()                     # same clock the original predict() stores in MongoDB
+    shift = now_ist() - now_srv                           # display in IST
+    past = None
+    if s_log is not None and len(s_log):
+        past = s_log[s_log['timestamp'] > now_srv - datetime.timedelta(hours=24)]
+    fig = go.Figure()
+    ys_all = [current_aqi] + (list(past['actual_aqi']) if past is not None else []) + (list(preds) if preds else [])
+    ymax = max(ys_all) * 1.18 + 10
+    add_category_lines(fig, ymax)
+    if past is not None and len(past):
+        fig.add_trace(go.Scatter(x=past['timestamp'] + shift, y=past['actual_aqi'], name="Live readings (logged)", mode="lines+markers",
+                                 line=dict(color="#f87171", width=3, shape="spline"), marker=dict(size=6), fill="tozeroy",
                                  fillgradient=dict(type="vertical", colorscale=[[0, "rgba(248,113,113,0)"], [1, "rgba(248,113,113,.4)"]]),
-                                 hovertemplate="%{x|%d %b %H:%M}<br>AQI <b>%{y:.0f}</b><extra>Observed (model)</extra>"))
-        if not fut.empty:
-            fig.add_trace(go.Scatter(x=fut["dt"], y=fut["aqi"], name="Next 24h · CAMS", mode="lines",
-                                     line=dict(color="#94a3b8", width=2, dash="dot", shape="spline"),
-                                     hovertemplate="%{x|%d %b %H:%M}<br>AQI <b>%{y:.0f}</b><extra>CAMS forecast</extra>"))
-        if preds:
-            xs = [now, now + datetime.timedelta(hours=1), now + datetime.timedelta(hours=6), now + datetime.timedelta(hours=24)]
-            ys = [current_aqi, *preds]
-            fig.add_trace(go.Scatter(x=xs, y=ys, name="Oracle AI", mode="lines+markers+text",
-                                     line=dict(color="#5eead4", width=3), text=[f"{v:.0f}" for v in ys], textposition="top center",
-                                     textfont=dict(color="white", size=13), cliponaxis=False,
-                                     marker=dict(size=14, color=[get_theme(v)[0] for v in ys], line=dict(color="white", width=2.5), symbol="diamond"),
-                                     hovertemplate="%{x|%d %b %H:%M}<br>AQI <b>%{y:.0f}</b><extra>Oracle AI</extra>"))
-        fig.add_vline(x=now, line=dict(color="rgba(255,255,255,.35)", width=1, dash="dash"))
-        style_fig(fig, 380)
-        fig.update_yaxes(range=[0, ymax], title="AQI")
-        with st.container(key="card_shape"):
-            html('<div class="eyebrow-sm">Last 24 hours → next 24 hours · hourly · IST</div><div class="card-title">The shape of today\'s air</div>'
-                 '<div class="card-sub">Hourly CAMS atmospheric model for this location, with the Oracle\'s AI forecast overlaid</div>')
-            show_chart(fig, key="shape")
+                                 hovertemplate="%{x|%d %b %H:%M}<br>AQI <b>%{y:.0f}</b><extra>WAQI live</extra>"))
+    now_x = now_ist()
+    if preds:
+        xs = [now_x, now_x + datetime.timedelta(hours=1), now_x + datetime.timedelta(hours=6), now_x + datetime.timedelta(hours=24)]
+        ys = [current_aqi, *preds]
+        fig.add_trace(go.Scatter(x=xs, y=ys, name="Oracle AI forecast", mode="lines+markers+text",
+                                 line=dict(color="#5eead4", width=3), text=[f"{v:.0f}" for v in ys], textposition="top center",
+                                 textfont=dict(color="white", size=13), cliponaxis=False,
+                                 marker=dict(size=14, color=[get_theme(v)[0] for v in ys], line=dict(color="white", width=2.5), symbol="diamond"),
+                                 hovertemplate="%{x|%d %b %H:%M}<br>AQI <b>%{y:.0f}</b><extra>Oracle AI</extra>"))
+    fig.add_vline(x=now_x, line=dict(color="rgba(255,255,255,.35)", width=1, dash="dash"))
+    style_fig(fig, 380)
+    fig.update_yaxes(range=[0, ymax], title="AQI")
+    with st.container(key="card_shape"):
+        html('<div class="eyebrow-sm">Last 24 hours → next 24 hours · IST</div><div class="card-title">The shape of today\'s air</div>'
+             '<div class="card-sub">Live WAQI readings saved to MongoDB on each visit, with the Oracle\'s XGBoost forecast ahead</div>')
+        show_chart(fig, key="shape")
 
-        wk = hourly[(hourly["dt"] <= now) & (hourly["dt"] > now - datetime.timedelta(days=7))].copy()
+    hist = load_station_excel(info["file"])
+    if hist is not None and len(hist):
+        wk = hist.tail(7 * 24).copy()
         wk["day"] = wk["dt"].dt.date
-        daily = wk.groupby("day")["aqi"].agg(["mean", "max"]).reset_index()
+        daily = wk.groupby("day")["aqi_index"].agg(["mean", "max"]).dropna().reset_index()
         if len(daily):
             labels = pd.to_datetime(daily["day"]).dt.strftime("%a %d")
             figd = go.Figure()
@@ -1467,11 +1390,9 @@ elif page == "Live Dashboard":
             figd.update_layout(barmode="group", bargap=0.3, bargroupgap=0.12)
             figd.update_yaxes(range=[0, daily["max"].max() * 1.2])
             with st.container(key="card_week"):
-                html('<div class="eyebrow-sm">Seven days</div><div class="card-title">Daily averages vs peaks</div>'
-                     '<div class="card-sub">The gap between the bars shows how violent the spikes are</div>')
+                html('<div class="eyebrow-sm">Seven days · official CPCB station data</div><div class="card-title">Daily averages vs peaks</div>'
+                     '<div class="card-sub">Last 7 days in the station file — the gap between the bars shows how violent the spikes are</div>')
                 show_chart(figd, key="week")
-    else:
-        st.info("Hourly model data is unavailable right now, so the 24-hour shape chart is hidden.")
 
     # ---------- map + ranking ----------
     section("One city, one sky", "Circle size and colour scale with the live AQI · white rings = selected station", "📍", eyebrow="Live station map")
@@ -1570,14 +1491,13 @@ elif page == "Live Dashboard":
 # PAGE 2: HISTORICAL TRENDS
 # =====================================================================
 elif page == "Historical Trends":
-    info = LOCATIONS_DATA[station]
+    info = station_meta(station)
     df = load_station_excel(info["file"])
     if df is None:
         page_head("Historical trends · official station character", f"The rhythm of <span class='hl-warm'>{station}</span>", "")
         st.error(f"Data file `{info['file']}` not found next to app.py.")
         st.stop()
-    _last_day = df["dt"].max().normalize()
-    last30 = df[df["dt"] >= _last_day - pd.Timedelta(days=29)].copy()   # last 30 calendar days (robust to gaps / 15-min data)
+    last30 = df.tail(30 * 24).copy()
     valid = last30.dropna(subset=["aqi_index"])
     n_days = max(1, (df["dt"].max() - df["dt"].min()).days)
     page_head("Historical trends · official station character", f"The rhythm of <span class='hl-warm'>{station}</span>",
@@ -1633,7 +1553,8 @@ elif page == "Historical Trends":
 
     # ---------- calendar + day explorer ----------
     section("AQI calendar", "Daily average for the last 30 days — pick a day below for its full story", "📅", eyebrow="Thirty days")
-    df_recent = last30.copy()
+    df_recent = df.sort_values("dt", ascending=False).head(30 * 24)
+    df_recent = df_recent.copy()
     df_recent['date'] = df_recent['dt'].dt.date
     daily = df_recent.groupby('date')['aqi_index'].mean().sort_index()
     if len(daily):
@@ -1707,68 +1628,65 @@ elif page == "Historical Trends":
 # =====================================================================
 elif page == "Model Accuracy":
     page_head("Model accuracy · an honest scorecard", "How good is the <span class='hl-mint'>Oracle</span>?",
-              f"Every Live Dashboard visit logs a forecast to MongoDB. Here each forecast is checked against the AQI that actually arrived — for {station}.")
+              f"This page tracks the real-world performance of the AI. Every time you load the Live Dashboard, it saves a prediction to MongoDB — showing {station}.")
     s_log = station_log(station)
     bias, best_txt = None, "—"
 
-    if predictions_collection is None:
-        st.info("🗄️ MongoDB is not connected. Add `MONGO_URL` to `.streamlit/secrets.toml` (or env vars) to start logging and scoring predictions.")
-    elif s_log is None or len(s_log) < 2:
-        st.warning(f"⏳ Collecting data for **{station}**… open the Live Dashboard (or press the button below) a few times to build history.")
+    if s_log is None or s_log.empty:
+        st.info("Collecting data... Please refresh the Live Dashboard to build history.")
+    elif len(s_log) < 2:
+        st.warning("Need more data for this specific station. Refresh the Live Dashboard a few more times.")
     else:
-        evals = {h: horizon_eval(s_log, h) for h in (1, 6, 24)}
-        m1, meth1 = evals[1]
-        mae = m1["err"].abs().mean()
-        rmse = float(np.sqrt((m1["err"] ** 2).mean()))
-        within = (m1["err"].abs() <= 25).mean() * 100
-        bias = -m1["err"].mean()  # predicted - actual
+        df_station = s_log
+        df_station['error'] = abs(df_station['actual_aqi'] - df_station['pred_1h'])      # original
+        mae = df_station['error'].mean()                                                  # original
+        signed = df_station['pred_1h'] - df_station['actual_aqi']
+        rmse = float(np.sqrt((signed ** 2).mean()))
+        within = (df_station['error'] <= 25).mean() * 100
+        bias = float(signed.mean())
         html('<div class="stats">'
-             + stat_card("Mean absolute error · 1h", f"{mae:.1f}", "AQI points", "#38bdf8", 0)
+             + stat_card("Mean absolute error (MAE)", f"{mae:.2f}", "AQI points · 1h", "#38bdf8", 0)
              + stat_card("RMSE · 1h", f"{rmse:.1f}", "AQI points (punishes big misses)", "#a78bfa", 80)
              + stat_card("Within ±25 AQI", f"{within:.0f}%", "of 1-hour forecasts", "#4ade80", 160)
              + stat_card("Mean bias", f"{bias:+.0f}", "over-predicts" if bias > 0 else "under-predicts", "#fbbf24", 240)
-             + stat_card("Forecasts logged", f"{len(s_log)}", station, "#f472b6", 320)
+             + stat_card("Total predictions logged", f"{len(df_station)}", station, "#f472b6", 320)
              + "</div>")
-        if meth1 == "same-time":
-            st.caption("ℹ️ Not enough history yet to match forecasts with the AQI that arrived *h* hours later, so forecasts are compared "
-                       "with the reading at the moment they were made. Scores will become exact as more data is logged.")
 
-        section("Real vs predicted", "Each forecast is plotted at the time it was predicting for", "📉", eyebrow="Track record")
+        section("Real vs predicted", f"Real vs Predicted AQI for {station}", "📉", eyebrow="Track record")
+        shift = now_ist() - datetime.datetime.now()      # display timestamps in IST
         with st.container(key="card_acc"):
             hsel = st.radio("Horizon", ["1 hour", "6 hours", "24 hours"], horizontal=True, label_visibility="collapsed")
             h = int(hsel.split()[0])
-            mh, _m = evals[h]
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=s_log['timestamp'], y=s_log['actual_aqi'], mode='lines+markers', name='Actual AQI (live)',
+            fig.add_trace(go.Scatter(x=df_station['timestamp'] + shift, y=df_station['actual_aqi'], mode='lines+markers', name='Actual AQI (Live)',
                                      line=dict(color='#4ade80', width=3.5, shape="spline"), marker=dict(size=7, line=dict(color="white", width=1.5))))
-            if mh is not None:
-                fig.add_trace(go.Scatter(x=mh['target'], y=mh['pred'], mode='lines+markers', name=f'Predicted {h}h ahead',
-                                         line=dict(color='#fb923c', dash='dash', width=2.5, shape="spline"), marker=dict(size=7)))
+            fig.add_trace(go.Scatter(x=df_station['timestamp'] + shift, y=df_station[f'pred_{h}h'], mode='lines+markers', name=f'Predicted {h}H AQI',
+                                     line=dict(color='#fb923c', dash='dash', width=2.5, shape="spline"), marker=dict(size=7)))
             style_fig(fig, 420)
             fig.update_layout(hovermode="x unified", yaxis_title="AQI")
             show_chart(fig, key="acc")
 
         left, right = st.columns(2, gap="medium")
         with left:
-            ae = m1["err"].abs()
+            ae = df_station['error']
             buckets = [("0 – 10", (ae <= 10).mean()), ("11 – 20", ((ae > 10) & (ae <= 20)).mean()),
                        ("21 – 40", ((ae > 20) & (ae <= 40)).mean()), ("40+", (ae > 40).mean())]
             bars = "".join(f'<div class="ebar"><span>{k}</span><div class="t"><div style="width:{v * 100:.0f}%;animation-delay:{i * 120}ms"></div></div><b>{v * 100:.0f}%</b></div>'
                            for i, (k, v) in enumerate(buckets))
-            hz_mae = {hh: (ev[0]["err"].abs().mean() if ev[0] is not None and len(ev[0]) else np.nan) for hh, ev in evals.items()}
-            best = min((v, k) for k, v in hz_mae.items() if not np.isnan(v))[1] if any(not np.isnan(v) for v in hz_mae.values()) else 1
+            hz_mae = {hh: abs(df_station['actual_aqi'] - df_station[f'pred_{hh}h']).mean() for hh in (1, 6, 24) if f'pred_{hh}h' in df_station}
+            best = min(hz_mae, key=hz_mae.get) if hz_mae else 1
             hz = "".join(f'<div class="hz {"best" if hh == best else ""}"><span>{hh} hour{"s" if hh > 1 else ""}</span><b>{v:.1f} AQI</b></div>'
-                         for hh, v in hz_mae.items() if not np.isnan(v))
+                         for hh, v in hz_mae.items())
             html(f"""<div class="glass fade-up"><div style="display:grid;grid-template-columns:1.2fr 1fr;gap:1.4rem">
                 <div><div class="eyebrow-sm">Error distribution · 1h</div>{bars}</div>
                 <div><div class="eyebrow-sm">Horizon skill (MAE)</div>{hz}</div></div></div>""")
         with right:
-            recent = s_log.tail(8).iloc[::-1]
+            recent = df_station.tail(8).iloc[::-1]
             rr = ""
             for i, (_, r) in enumerate(recent.iterrows()):
                 diff = r["pred_1h"] - r["actual_aqi"]
                 cls = "e-ok" if abs(diff) <= 15 else "e-mid" if abs(diff) <= 35 else "e-bad"
-                rr += (f'<div class="rrow" style="animation-delay:{i * 60}ms"><div><div class="d">{r["timestamp"]:%d %b, %H:%M}</div>'
+                rr += (f'<div class="rrow" style="animation-delay:{i * 60}ms"><div><div class="d">{r["timestamp"] + shift:%d %b, %H:%M}</div>'
                        f'<div class="s">actual {r["actual_aqi"]:.0f} · predicted (1h) {r["pred_1h"]:.0f}</div></div>'
                        f'<span class="ebadge {cls}">{diff:+.0f}</span></div>')
             html(f'<div class="glass fade-up"><div class="eyebrow-sm">Recent rows</div><div class="card-title" style="margin-bottom:.5rem">Latest logged forecasts</div>{rr}</div>')
@@ -1778,32 +1696,28 @@ elif page == "Model Accuracy":
     section("Model card", "What's under the hood", "🧠", eyebrow="Transparency")
     mc_left, mc_right = st.columns([1.4, 1], gap="medium")
     with mc_left:
-        n_feat = f"{len(models[1])} inputs — " if models else ""
+        n_feat = f"{len(c1)} inputs — "
         bias_txt = f"{bias:+.0f} AQI ({'over' if bias > 0 else 'under'}-predicts)" if bias is not None else "—"
         html(f"""<div class="glass mcard fade-up">
             <div class="kv"><span>Architecture</span><b>XGBoost gradient-boosted trees · 3 horizon models</b></div>
             <div class="kv"><span>Features</span><b>{n_feat}AQI lags 1/3/6/12/24 h, cyclic hour, month, weekday, temperature, wind, future wind/temp, station one-hot</b></div>
             <div class="kv"><span>Targets</span><b>CPCB AQI at +1h, +6h, +24h</b></div>
-            <div class="kv"><span>Storage</span><b>MongoDB · aqi_database.predictions {'(connected)' if predictions_collection is not None else '(not connected)'}</b></div>
+            <div class="kv"><span>Storage</span><b>MongoDB · aqi_database.predictions</b></div>
             <div class="kv"><span>Best horizon</span><b>{best_txt}</b></div>
             <div class="kv"><span>Mean bias (1h)</span><b>{bias_txt}</b></div>
             <div class="kv"><span>Breakpoints</span><b>CPCB PM2.5 & PM10 sub-indices (max of the two)</b></div></div>""")
     with mc_right:
         html("""<div class="glass fade-up"><div class="eyebrow-sm">How scoring works</div>
             <div class="why" style="--c:#5eead4"><div class="dot"></div><div><div class="t">Log</div><div class="d">Each live reading stores the current AQI and three forecasts.</div></div></div>
-            <div class="why" style="--c:#fde68a"><div class="dot"></div><div><div class="t">Match</div><div class="d">A 6-hour forecast is compared with the reading logged ~6 hours later.</div></div></div>
-            <div class="why" style="--c:#f9a8d4"><div class="dot"></div><div><div class="t">Score</div><div class="d">MAE, RMSE, bias and hit-rate update automatically.</div></div></div></div>""")
-        if predictions_collection is not None and models is not None and station in live_data:
+            <div class="why" style="--c:#fde68a"><div class="dot"></div><div><div class="t">Compare</div><div class="d">Each saved forecast is compared with the live AQI saved in the same row.</div></div></div>
+            <div class="why" style="--c:#f9a8d4"><div class="dot"></div><div><div class="t">Score</div><div class="d">MAE = average of |actual − predicted|, plus RMSE, bias and hit-rate.</div></div></div></div>""")
+        if station in live_data:
             with st.container(key="ghost_lognow"):
                 clicked = wide_button("🧪 Log a fresh prediction", key="log_now")
             if clicked:
-                predict.clear(); get_live_data.clear()
-                fresh, _ = get_live_data()
-                if station in fresh:
-                    _r = predict(station, fresh[station], *models)
-                    load_prediction_log.clear()
-                    st.toast("Prediction logged ✅")
-                    st.rerun()
+                predict(station, live_data[station], m1, c1, m6, c6, m24, c24)     # original predict + MongoDB save
+                st.toast("Prediction logged ✅")
+                st.rerun()
     footer()
 
 # =====================================================================
@@ -2032,4 +1946,3 @@ elif page == "Health Advisories":
     with mid:
         cta("←  Back to live readings", "Live Dashboard", "back_live")
     footer()
-
