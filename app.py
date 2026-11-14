@@ -182,9 +182,9 @@ def predict(station_name, live_weather, m1, c1, m6, c6, m24, c24):
             "timestamp": datetime.datetime.now(),
             "location": station_name,
             "actual_aqi": live_weather['aqi'],
-            "pred_1h": p1,
-            "pred_6h": p6,
-            "pred_24h": p24
+            "pred_1h": float(p1),
+            "pred_6h": float(p6),
+            "pred_24h": float(p24)
         })
     except Exception as e:
         st.error(f"Failed to save to database: {e}")
