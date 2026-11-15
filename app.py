@@ -84,10 +84,10 @@ predictions_collection = get_database()
 
 LOCATIONS_DATA = {
     "Anand Vihar": {"coords": (28.6469, 77.3160), "pincode": "110092", "file": "anand_vihar.xlsx"},
-    "Dwarka": {"coords": (28.5921, 77.0460), "pincode": "110075", "file": "dwarka.xlsx"},
+    "Dwarka": {"coords": (28.5921, 77.0460), "pincode": "110077", "file": "dwarka.xlsx"},
     "IGI Airport": {"coords": (28.5562, 77.1000), "pincode": "110037", "file": "igi_airport.xlsx"},
     "Okhla Phase III": {"coords": (28.5432, 77.2725), "pincode": "110020", "file": "okhla.xlsx"},
-    "Rohini": {"coords": (28.7320, 77.1123), "pincode": "110085", "file": "rohini.xlsx"}
+    "Rohini": {"coords": (28.7320, 77.1123), "pincode": "110089", "file": "rohini.xlsx"}
 }
 ALL_LOCATIONS = list(LOCATIONS_DATA.keys())
 
@@ -551,7 +551,6 @@ def dose_recs(aqi):
                        "N95 mandatory outdoors", "N95 mandatory, limit trips"][i]),
         ("🌬️", "Purifier", ["Off", "Optional", "Bedroom at night", "Run when home",
                             "Run continuously", "Run continuously, max fan"][i]),
-        ("🪟", "Windows", ["Open wide", "Open", "Open midday", "Brief airing only", "Keep closed", "Sealed"][i]),
         ("🏃", "Outdoor exercise", ["Go for it", "Go for it", "Keep it light", "Move indoors",
                                     "Postpone", "Cancel"][i]),
     ]
