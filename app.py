@@ -1,10 +1,12 @@
 """
 Delhi AQI Oracle  -  premium Streamlit design
 =============================================
-Pages:  Entry   ->  Home  |  Live  |  Trends  |  Accuracy  |  Health
+Pages:  Entry (clouds)  ->  Home  |  Live  |  Trends  |  Accuracy  |  Health
 
+IMPORTANT: every data / model / database line below is copied UNCHANGED from the original app.py
+(secrets, MongoDB, WAQI + Open-Meteo links, CPCB formula, Excel loader, model loading, predict + MongoDB logging).
+Only the presentation layer (layout, CSS, charts, images, navigation) is new.
 """
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -84,10 +86,13 @@ predictions_collection = get_database()
 
 LOCATIONS_DATA = {
     "Anand Vihar": {"coords": (28.6469, 77.3160), "pincode": "110092", "file": "anand_vihar.xlsx"},
-    "Dwarka": {"coords": (28.5921, 77.0460), "pincode": "110077", "file": "dwarka.xlsx"},
-    "IGI Airport": {"coords": (28.5562, 77.1000), "pincode": "110037", "file": "igi_airport.xlsx"},
+    "Dwarka": {"coords": (28.5921, 77.0460), "pincode": "110075", "file": "dwarka.xlsx"},
+    # IGI's own WAQI monitors (idx 2557 / 10128) stopped reporting in 2018, so geo: lookup fell back to the same Dwarka
+    # monitor. "waqi": "@2556" pins IGI to the nearest OTHER monitor that still updates daily: R.K. Puram (aqicn.org/city/delhi/r.k.-puram)
+    "IGI Airport": {"coords": (28.5562, 77.1000), "pincode": "110037", "file": "igi_airport.xlsx", "waqi": "@2556"},
     "Okhla Phase III": {"coords": (28.5432, 77.2725), "pincode": "110020", "file": "okhla.xlsx"},
-    "Rohini": {"coords": (28.7320, 77.1123), "pincode": "110089", "file": "rohini.xlsx"}
+    "Rohini": {"coords": (28.7320, 77.1123), "pincode": "110085", "file": "rohini.xlsx"},
+    "Connaught Place": {"coords": (28.6315, 77.2167), "pincode": "110001", "file": "connaught_place.xlsx"}
 }
 ALL_LOCATIONS = list(LOCATIONS_DATA.keys())
 
@@ -95,9 +100,10 @@ ALL_LOCATIONS = list(LOCATIONS_DATA.keys())
 STATION_INFO = {
     "Anand Vihar": {"district": "East Delhi", "story": "an inter-state bus terminal and highway junction"},
     "Dwarka": {"district": "South West Delhi", "story": "a planned residential sub-city"},
-    "IGI Airport": {"district": "South West Delhi", "story": "India's busiest airport"},
+    "IGI Airport": {"district": "South West Delhi", "story": "India's busiest airport (live reading from the nearest active monitor, R.K. Puram)"},
     "Okhla Phase III": {"district": "South East Delhi", "story": "an industrial estate"},
     "Rohini": {"district": "North West Delhi", "story": "a dense residential grid"},
+    "Connaught Place": {"district": "New Delhi", "story": "the colonnaded commercial heart of New Delhi"},
 }
 
 
@@ -219,7 +225,8 @@ def get_live_data():
     for name, info in LOCATIONS_DATA.items():
         lat, lon = info["coords"]
         try:
-            url = f"https://api.waqi.info/feed/geo:{lat};{lon}/?token={WAQI_TOKEN}"
+            feed = info.get("waqi", f"geo:{lat};{lon}")      # geo: lookup as before; a pinned station id where set (IGI)
+            url = f"https://api.waqi.info/feed/{feed}/?token={WAQI_TOKEN}"
             res = requests.get(url, timeout=3).json()
             if res["status"] == "ok":
                 d = res["data"]
@@ -339,6 +346,124 @@ def predict_once(station_name, live_weather):
     if key not in store:
         store[key] = predict(station_name, live_weather, m1, c1, m6, c6, m24, c24)
     return store[key]
+
+
+# ---------------------------------------------------------------------
+# HISTORY FROM THE WEB (Trends page + 7-day chart), refreshed every hour
+#   1) WAQI live readings (the same aqicn.org stations as the Live page) are saved for ALL stations into
+#      MongoDB aqi_database.station_history every time the live data refreshes -> real readings pile up daily.
+#   2) Hours not yet saved are filled from Open-Meteo's air-quality API (CAMS), hourly PM2.5/PM10 since 1 Oct 2026,
+#      converted with YOUR calculate_cpcb_aqi().
+#   3) If the internet/database are both unavailable, the station .xlsx file (your original loader) is used.
+# ---------------------------------------------------------------------
+HISTORY_START = datetime.date(2026, 10, 1)
+SRC_WAQI = "WAQI live (saved)"
+SRC_OM = "Open-Meteo (CAMS)"
+SRC_FILE = "Station file"
+
+
+def _history_collection():
+    try:
+        return predictions_collection.database["station_history"]
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def archive_live_readings(hour_key, snapshot):
+    """Upserts one document per station per hour (no duplicates). Runs once per new live reading."""
+    col = _history_collection()
+    if col is None:
+        return 0
+    hour = datetime.datetime.strptime(hour_key, "%Y-%m-%d %H:00")
+    n = 0
+    for name, aqi, pm25, pm10, temp, wind in snapshot:
+        try:
+            col.update_one({"location": name, "hour": hour},
+                           {"$set": {"location": name, "hour": hour, "aqi": float(aqi), "pm25": float(pm25), "pm10": float(pm10),
+                                     "temp": float(temp), "wind": float(wind), "source": "WAQI", "tz": "IST"}}, upsert=True)
+            n += 1
+        except Exception:
+            pass
+    return n
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_web_history(lat, lon, start, end):
+    """Hourly PM2.5/PM10 from Open-Meteo air-quality API (no key needed), IST, past hours only."""
+    try:
+        r = requests.get("https://air-quality-api.open-meteo.com/v1/air-quality",
+                         params={"latitude": lat, "longitude": lon, "hourly": "pm10,pm2_5", "start_date": start,
+                                 "end_date": end, "timezone": "Asia/Kolkata"}, timeout=12).json()["hourly"]
+        h = pd.DataFrame({"dt": pd.to_datetime(r["time"]), "pm2_5": r["pm2_5"], "pm10": r["pm10"]})
+    except Exception:
+        return None
+    h = h.dropna()
+    h = h[h["dt"] <= pd.Timestamp(now_ist().replace(tzinfo=None))]
+    if h.empty:
+        return None
+    h["aqi_index"] = [calculate_cpcb_aqi(a, b) for a, b in zip(h["pm2_5"], h["pm10"])]
+    h["source"] = SRC_OM
+    return h
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def read_saved_history(station_name, start):
+    col = _history_collection()
+    if col is None:
+        return None
+    try:
+        rows = list(col.find({"location": station_name, "hour": {"$gte": datetime.datetime.combine(start, datetime.time())}},
+                             {"_id": 0, "hour": 1, "aqi": 1, "pm25": 1, "pm10": 1}))
+    except Exception:
+        return None
+    if not rows:
+        return None
+    w = pd.DataFrame(rows).rename(columns={"hour": "dt", "aqi": "aqi_index", "pm25": "pm2_5"})
+    w["dt"] = pd.to_datetime(w["dt"]).dt.floor("h")
+    w["source"] = SRC_WAQI
+    return w.groupby("dt", as_index=False).last()
+
+
+def load_station_history(station_name):
+    """Hourly history since HISTORY_START, one row per hour (gaps = NaN) with a 'source' column."""
+    lat, lon = LOCATIONS_DATA[station_name]["coords"]
+    today = now_ist().date()
+    web = fetch_web_history(lat, lon, HISTORY_START.isoformat(), today.isoformat())
+    saved = read_saved_history(station_name, HISTORY_START)
+    parts = [x for x in (saved, web) if x is not None and len(x)]
+    if not parts:                                    # offline fallback: your original Excel loader
+        df = load_station_excel(LOCATIONS_DATA[station_name]["file"])
+        if df is None:
+            return None
+        return df.assign(source=SRC_FILE)
+    df = (pd.concat(parts, ignore_index=True)        # saved WAQI readings first -> they win over the model value
+          .drop_duplicates("dt", keep="first").set_index("dt").sort_index())
+    full = pd.date_range(pd.Timestamp(HISTORY_START), df.index.max(), freq="h")
+    return df.reindex(full).rename_axis("dt").reset_index()
+
+
+def history_badge(df):
+    if df is None or "source" not in df:
+        return ""
+    share = df["source"].value_counts(normalize=True) * 100
+    bits = []
+    for src, label in [(SRC_WAQI, "WAQI live readings (aqicn.org)"), (SRC_OM, "Open-Meteo CAMS air-quality model"), (SRC_FILE, "station .xlsx file")]:
+        if share.get(src, 0) > 0:
+            bits.append(f"<b>{share[src]:.0f}%</b> {label}" if share[src] >= 1 else f"<b>&lt;1%</b> {label}")
+    upd = df.dropna(subset=["aqi_index"])["dt"].max()
+    return (f'<div class="src-badge">🛰️ Data: {" · ".join(bits)} · updated hourly · latest {upd:%d %b %H:00} IST</div>'
+            if bits and pd.notna(upd) else "")
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def model_stations():
+    """Stations that have history inside your outputs/clean.pkl (the original predict() needs it)."""
+    try:
+        idx = pd.read_pickle(OUT / "clean.pkl").index
+        return set(idx.get_level_values(0)) if isinstance(idx, pd.MultiIndex) else set(idx)
+    except Exception:
+        return None
 
 
 @st.cache_data(ttl=900)
@@ -551,6 +676,7 @@ def dose_recs(aqi):
                        "N95 mandatory outdoors", "N95 mandatory, limit trips"][i]),
         ("🌬️", "Purifier", ["Off", "Optional", "Bedroom at night", "Run when home",
                             "Run continuously", "Run continuously, max fan"][i]),
+        ("🪟", "Windows", ["Open wide", "Open", "Open midday", "Brief airing only", "Keep closed", "Sealed"][i]),
         ("🏃", "Outdoor exercise", ["Go for it", "Go for it", "Keep it light", "Move indoors",
                                     "Postpone", "Cancel"][i]),
     ]
@@ -933,6 +1059,9 @@ html, body, .stApp { color-scheme: dark; color: #e2e8f0; }
 [data-testid="stToast"] { background: rgba(15,23,42,.95) !important; color: #f1f5f9 !important; border: 1px solid rgba(255,255,255,.12) !important; }
 [data-testid="stAlert"] { background: rgba(15,23,42,.7) !important; color: #e2e8f0 !important; }
 [data-testid="stAlert"] p { color: #e2e8f0 !important; }
+[data-testid="stAlert"] > div, [data-testid="stAlertContainer"] { background: rgba(56,189,248,.10) !important; color: #e2e8f0 !important;
+  border: 1px solid rgba(56,189,248,.28) !important; border-radius: 16px !important; }
+[data-testid="stAlertContentInfo"], [data-testid="stAlertContentWarning"], [data-testid="stAlertContentError"] { color: #e2e8f0 !important; }
 .stDownloadButton button, .stButton button { color: #f1f5f9; }
 code { background: rgba(255,255,255,.08) !important; color: #e2e8f0 !important; }
 [data-testid="stCheckbox"] label:has(input[role="switch"]) > span + div { background: rgba(148,163,184,.38) !important; }
@@ -993,6 +1122,9 @@ code { background: rgba(255,255,255,.08) !important; color: #e2e8f0 !important; 
 .st-key-enter_btn button:hover { transform: translateY(-3px) scale(1.03); }
 .fog { position: fixed; left: 0; right: 0; bottom: 0; height: 32vh; pointer-events: none; z-index: -1; background: linear-gradient(0deg, rgba(226,232,240,.18), transparent); }
 @media (max-width: 760px) { .hero-content { padding: 1.5rem; } .gauge { width: 220px; height: 220px; } .gauge-center .num { font-size: 3.4rem; } .pm-grid { grid-template-columns: 1fr; } }
+.src-badge{display:inline-block;margin:.45rem 0 .2rem;padding:.38rem .8rem;border-radius:999px;font-size:.76rem;color:#cbd5e1;
+  background:rgba(94,234,212,.08);border:1px solid rgba(94,234,212,.25)}
+.src-badge b{color:#5eead4}
 </style>
 """
 
@@ -1074,6 +1206,9 @@ m1, c1, m6, c6, m24, c24 = load_models()
 live_data = get_live_data()
 models = (m1, c1, m6, c6, m24, c24)
 updated_at = live_fetched_at()
+if live_data:
+    archive_live_readings(now_ist().strftime("%Y-%m-%d %H:00"),
+                          tuple((k, v["aqi"], v["pm25"], v["pm10"], v["temp"], v["wind"]) for k, v in sorted(live_data.items())))
 
 
 def need_live(station_name):
@@ -1158,7 +1293,7 @@ if page == "Home":
         {particles(int(np.clip(avg / 5, 10, 90)), seed=4, rgb="255,220,170", max_size=5, rise=200)}
         <div class="skyline-content">
             <div>
-                <div class="eyebrow-line"><span></span>Delhi · NCR — one sky, five stations</div>
+                <div class="eyebrow-line"><span></span>Delhi · NCR — one sky, six stations</div>
                 <h1>The city average is <span style="color:{color}">{avg:.0f}</span>. {CITY_PHRASES[tag]}</h1>
                 <p class="lead2">Every station tells a different story — a highway junction, an airport, an industrial estate,
                 a residential grid. The Oracle compares them so you can see exactly where the air falls apart.</p>
@@ -1174,7 +1309,7 @@ if page == "Home":
 
     section("A haze you can measure, a future you can prepare for.", "", "✨", eyebrow="What the Oracle reads")
     feats = [
-        ("📡", "A live reading, not a rumour", "Five CPCB stations across Delhi, converted to the national AQI scale with PM2.5 and PM10 sub-indices.",
+        ("📡", "A live reading, not a rumour", "Six live monitoring stations across Delhi, converted to the national AQI scale with PM2.5 and PM10 sub-indices.",
          "Open the dashboard  →", "Live Dashboard"),
         ("📊", "The next 24 hours, modelled", "Lagged AQI, diurnal cycles, wind dispersion and temperature combine into XGBoost forecasts for 1h, 6h and 24h.",
          "See the patterns  →", "Historical Trends"),
@@ -1299,11 +1434,16 @@ elif page == "Live Dashboard":
     # ---------- AI forecast (ORIGINAL predict + MongoDB logging) ----------
     preds = None
     pred_err = None
-    try:
-        p1, p6, p24 = predict_once(station, live_data[station])
-        preds = (float(p1), float(p6), float(p24))
-    except Exception as e:
-        pred_err = e
+    _ms = model_stations()
+    if _ms is not None and station not in _ms:
+        pred_err = (f"Your trained model's history file (outputs/clean.pkl) has no rows for **{station}**, so the original "
+                    f"predict() cannot build its lag features. The live reading above is real; retrain with this station to get forecasts.")
+    else:
+        try:
+            p1, p6, p24 = predict_once(station, live_data[station])
+            preds = (float(p1), float(p6), float(p24))
+        except Exception as e:
+            pred_err = e
     s_log = station_log(station)
     conf_html = ""
     if s_log is not None and len(s_log) >= 2:
@@ -1312,7 +1452,9 @@ elif page == "Live Dashboard":
         conf_html = (f'<div class="conf"><span class="k">CONFIDENCE</span><b>{conf:.0f}%</b>'
                      f'<div class="t"><div style="width:{conf:.0f}%"></div></div></div>')
     section("The next 24 hours", "XGBoost forecasts for +1h, +6h and +24h", "🔮", eyebrow="AI forecast · gradient boosted trees", right=conf_html)
-    if pred_err is not None:
+    if isinstance(pred_err, str):
+        st.info(f"🔮 {pred_err}")
+    elif pred_err is not None:
         st.error(f"Prediction failed: {pred_err}")
     else:
         p1, p6, p24 = preds
@@ -1337,21 +1479,25 @@ elif page == "Live Dashboard":
         cta("How accurate is this?  →", "Model Accuracy", "acc_link", style="link")
 
     # ---------- shape of today's air (your logged WAQI readings + Oracle forecast) ----------
-    now_srv = datetime.datetime.now()                     # same clock the original predict() stores in MongoDB
-    shift = now_ist() - now_srv                           # display in IST
+    hist = load_station_history(station)                 # hourly web history (saved WAQI readings first, then Open-Meteo)
+    now_x = now_ist().replace(tzinfo=None)
     past = None
-    if s_log is not None and len(s_log):
-        past = s_log[s_log['timestamp'] > now_srv - datetime.timedelta(hours=24)]
+    if hist is not None and len(hist):
+        past = hist[hist["dt"] > pd.Timestamp(now_x - datetime.timedelta(hours=24))].dropna(subset=["aqi_index"])
     fig = go.Figure()
-    ys_all = [current_aqi] + (list(past['actual_aqi']) if past is not None else []) + (list(preds) if preds else [])
+    ys_all = [current_aqi] + (list(past['aqi_index']) if past is not None else []) + (list(preds) if preds else [])
     ymax = max(ys_all) * 1.18 + 10
     add_category_lines(fig, ymax)
     if past is not None and len(past):
-        fig.add_trace(go.Scatter(x=past['timestamp'] + shift, y=past['actual_aqi'], name="Live readings (logged)", mode="lines+markers",
-                                 line=dict(color="#f87171", width=3, shape="spline"), marker=dict(size=6), fill="tozeroy",
+        fig.add_trace(go.Scatter(x=past['dt'], y=past['aqi_index'], name="Last 24 h (hourly web data)", mode="lines+markers",
+                                 line=dict(color="#f87171", width=3, shape="spline"), marker=dict(size=5), fill="tozeroy",
+                                 customdata=past['source'],
                                  fillgradient=dict(type="vertical", colorscale=[[0, "rgba(248,113,113,0)"], [1, "rgba(248,113,113,.4)"]]),
-                                 hovertemplate="%{x|%d %b %H:%M}<br>AQI <b>%{y:.0f}</b><extra>WAQI live</extra>"))
-    now_x = now_ist()
+                                 hovertemplate="%{x|%d %b %H:%M}<br>AQI <b>%{y:.0f}</b><extra>%{customdata}</extra>"))
+    fig.add_trace(go.Scatter(x=[now_x], y=[current_aqi], name="Now (WAQI live)", mode="markers+text", text=[f"{current_aqi:.0f}"],
+                             textposition="top center", textfont=dict(color="white", size=13), cliponaxis=False,
+                             marker=dict(size=16, color=get_theme(current_aqi)[0], line=dict(color="white", width=3)),
+                             hovertemplate="Now<br>AQI <b>%{y:.0f}</b><extra>WAQI live</extra>"))
     if preds:
         xs = [now_x, now_x + datetime.timedelta(hours=1), now_x + datetime.timedelta(hours=6), now_x + datetime.timedelta(hours=24)]
         ys = [current_aqi, *preds]
@@ -1365,12 +1511,12 @@ elif page == "Live Dashboard":
     fig.update_yaxes(range=[0, ymax], title="AQI")
     with st.container(key="card_shape"):
         html('<div class="eyebrow-sm">Last 24 hours → next 24 hours · IST</div><div class="card-title">The shape of today\'s air</div>'
-             '<div class="card-sub">Live WAQI readings saved to MongoDB on each visit, with the Oracle\'s XGBoost forecast ahead</div>')
+             '<div class="card-sub">The past 24 hours of hourly data, the live WAQI reading now, and the Oracle\'s XGBoost forecast ahead</div>')
         show_chart(fig, key="shape")
 
-    hist = load_station_excel(info["file"])
+    hist = load_station_history(station)
     if hist is not None and len(hist):
-        wk = hist.tail(7 * 24).copy()
+        wk = hist.tail(7 * 24).dropna(subset=["aqi_index"]).copy()
         wk["day"] = wk["dt"].dt.date
         daily = wk.groupby("day")["aqi_index"].agg(["mean", "max"]).dropna().reset_index()
         if len(daily):
@@ -1387,8 +1533,9 @@ elif page == "Live Dashboard":
             figd.update_layout(barmode="group", bargap=0.3, bargroupgap=0.12)
             figd.update_yaxes(range=[0, daily["max"].max() * 1.2])
             with st.container(key="card_week"):
-                html('<div class="eyebrow-sm">Seven days · official CPCB station data</div><div class="card-title">Daily averages vs peaks</div>'
-                     '<div class="card-sub">Last 7 days in the station file — the gap between the bars shows how violent the spikes are</div>')
+                html('<div class="eyebrow-sm">Seven days · live web data, updated hourly</div><div class="card-title">Daily averages vs peaks</div>'
+                     f'<div class="card-sub">The last 7 days at {station} — the gap between the bars shows how violent the spikes are</div>'
+                     + history_badge(wk))
                 show_chart(figd, key="week")
 
     # ---------- map + ranking ----------
@@ -1459,7 +1606,7 @@ elif page == "Live Dashboard":
             except TypeError:   # older Streamlit without key= on pydeck_chart
                 st.pydeck_chart(deck, height=470)
             html(f'<div class="map-hint">🖱️ Drag to move · scroll or use <b>+ / −</b> to zoom · right-drag to tilt · '
-                 f'{"centred on <b>" + station + "</b> (PIN " + LOCATIONS_DATA[station]["pincode"] + ")" if locate else "showing all 5 stations"}</div>')
+                 f'{"centred on <b>" + station + "</b> (PIN " + LOCATIONS_DATA[station]["pincode"] + ")" if locate else f"showing all {len(LOCATIONS_DATA)} stations"}</div>')
             html(f'<div class="legend">{legend_html()}</div>')
     with right:
         srt = sorted(map_data, key=lambda x: -x["aqi"])
@@ -1489,16 +1636,19 @@ elif page == "Live Dashboard":
 # =====================================================================
 elif page == "Historical Trends":
     info = station_meta(station)
-    df = load_station_excel(info["file"])
+    df = load_station_history(station)
     if df is None:
-        page_head("Historical trends · official station character", f"The rhythm of <span class='hl-warm'>{station}</span>", "")
-        st.error(f"Data file `{info['file']}` not found next to app.py.")
+        page_head("Historical trends · live web data", f"The rhythm of <span class='hl-warm'>{station}</span>", "")
+        st.error(f"No history available: the web sources could not be reached and `{info['file']}` was not found next to app.py.")
         st.stop()
     last30 = df.tail(30 * 24).copy()
     valid = last30.dropna(subset=["aqi_index"])
-    n_days = max(1, (df["dt"].max() - df["dt"].min()).days)
-    page_head("Historical trends · official station character", f"The rhythm of <span class='hl-warm'>{station}</span>",
-              f"{n_days} days of hourly CPCB readings, resampled into charts and a calendar. Station PIN {info['pincode']} in {info['district']}.")
+    _have = df.dropna(subset=["aqi_index"])
+    n_days = max(1, (_have["dt"].max().normalize() - _have["dt"].min().normalize()).days + 1)
+    page_head("Historical trends · live web data", f"The rhythm of <span class='hl-warm'>{station}</span>",
+              f"{n_days} days of hourly readings ({_have['dt'].min():%d %b} – {_have['dt'].max():%d %b %Y}), refreshed every hour. "
+              f"Station PIN {info['pincode']} in {info['district']}.")
+    html(history_badge(df))
 
     if not valid.empty:
         dmeans = valid.groupby(valid["dt"].dt.date)["aqi_index"].mean()
@@ -1514,9 +1664,10 @@ elif page == "Historical Trends":
 
     section("AQI chart", "Average AQI over the selected timeframe", "📊", eyebrow="Trend")
     with st.container(key="card_bar"):
-        timeframe = st.radio("Select Timeframe", ["Last 24 Hours", "Last 7 Days", "Last 30 Days"],
+        all_lbl = f"Since {HISTORY_START:%d %b %Y}"
+        timeframe = st.radio("Select Timeframe", ["Last 24 Hours", "Last 7 Days", "Last 30 Days", all_lbl],
                              horizontal=True, label_visibility="collapsed", index=1)
-        n = {"Last 24 Hours": 24, "Last 7 Days": 7 * 24, "Last 30 Days": 30 * 24}[timeframe]
+        n = {"Last 24 Hours": 24, "Last 7 Days": 7 * 24, "Last 30 Days": 30 * 24, all_lbl: len(df)}[timeframe]
         df_chart = df.tail(n).copy()
         if timeframe == "Last 24 Hours":
             chart_data = df_chart.assign(date_str=df_chart['dt'].dt.strftime('%d %b %H:%M'))
@@ -1549,8 +1700,9 @@ elif page == "Historical Trends":
         show_chart(fig_tr, key="trend")
 
     # ---------- calendar + day explorer ----------
-    section("AQI calendar", "Daily average for the last 30 days — pick a day below for its full story", "📅", eyebrow="Thirty days")
-    df_recent = df.sort_values("dt", ascending=False).head(30 * 24)
+    section("AQI calendar", f"Daily average since {HISTORY_START:%d %b %Y}, a new day is added every day — pick a day below for its full story",
+            "📅", eyebrow="Every day since October")
+    df_recent = df.sort_values("dt", ascending=False)
     df_recent = df_recent.copy()
     df_recent['date'] = df_recent['dt'].dt.date
     daily = df_recent.groupby('date')['aqi_index'].mean().sort_index()
@@ -1678,7 +1830,7 @@ elif page == "Model Accuracy":
                 <div><div class="eyebrow-sm">Error distribution · 1h</div>{bars}</div>
                 <div><div class="eyebrow-sm">Horizon skill (MAE)</div>{hz}</div></div></div>""")
         with right:
-            recent = df_station.tail(3).iloc[::-1]
+            recent = df_station.tail(8).iloc[::-1]
             rr = ""
             for i, (_, r) in enumerate(recent.iterrows()):
                 diff = r["pred_1h"] - r["actual_aqi"]
@@ -1934,9 +2086,7 @@ elif page == "Health Advisories":
         html("""<div class="glass emg fade-up" style="margin-top:1.4rem"><div class="eyebrow-sm">Emergency & help</div>
             <div class="kv"><span>National emergency number</span><b>112</b></div>
             <div class="kv"><span>Ambulance</span><b>102 / 108</b></div>
-             <div class="kv"><span>Delhi pollution helpline</span><b>1553 55 1177</b></div>
-            <div class="kv"><span>AIIMS emergency</span><b>011-2658 8700</b></div>
-            <div class="kv"><span>Official AQI (CPCB)</span><b>cpcb.nic.in</b></div>
+            <div class="kv"><span>Official AQI (CPCB)</span><b>cpcb.nic.in · "Sameer" app</b></div>
             <div class="kv"><span>Report pollution in Delhi</span><b>"Green Delhi" app</b></div>
             <div class="card-sub" style="margin-top:.7rem">⚠️ If you experience chest pain, breathlessness at rest or blue lips, seek emergency care immediately.
             This page is guidance, not medical advice.</div></div>""")
