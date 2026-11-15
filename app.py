@@ -1679,7 +1679,7 @@ elif page == "Model Accuracy":
                 <div><div class="eyebrow-sm">Error distribution · 1h</div>{bars}</div>
                 <div><div class="eyebrow-sm">Horizon skill (MAE)</div>{hz}</div></div></div>""")
         with right:
-            recent = df_station.tail(8).iloc[::-1]
+            recent = df_station.tail(3).iloc[::-1]
             rr = ""
             for i, (_, r) in enumerate(recent.iterrows()):
                 diff = r["pred_1h"] - r["actual_aqi"]
