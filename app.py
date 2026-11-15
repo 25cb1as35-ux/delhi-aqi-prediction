@@ -1935,7 +1935,9 @@ elif page == "Health Advisories":
         html("""<div class="glass emg fade-up" style="margin-top:1.4rem"><div class="eyebrow-sm">Emergency & help</div>
             <div class="kv"><span>National emergency number</span><b>112</b></div>
             <div class="kv"><span>Ambulance</span><b>102 / 108</b></div>
-            <div class="kv"><span>Official AQI (CPCB)</span><b>cpcb.nic.in · "Sameer" app</b></div>
+             <div class="kv"><span>Delhi pollution helpline</span><b>1553 55 1177</b></div>
+            <div class="kv"><span>AIIMS emergency</span><b>011-2658 8700</b></div>
+            <div class="kv"><span>Official AQI (CPCB)</span><b>cpcb.nic.in</b></div>
             <div class="kv"><span>Report pollution in Delhi</span><b>"Green Delhi" app</b></div>
             <div class="card-sub" style="margin-top:.7rem">⚠️ If you experience chest pain, breathlessness at rest or blue lips, seek emergency care immediately.
             This page is guidance, not medical advice.</div></div>""")
