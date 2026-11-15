@@ -79,6 +79,14 @@ def get_database():
         st.stop()
 
 predictions_collection = get_database()
+try:
+    predictions_collection.insert_one({
+        "log_type": "hourly_ping",
+        "timestamp": datetime.datetime.now()
+    })
+except Exception:
+    pass
+# ------------------------------------
 
 LOCATIONS_DATA = {
     "Anand Vihar": {"coords": (28.6469, 77.3160), "pincode": "110092", "file": "anand_vihar.xlsx"},
