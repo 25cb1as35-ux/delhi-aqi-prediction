@@ -2,10 +2,6 @@
 Delhi AQI Oracle  -  premium Streamlit design
 =============================================
 Pages:  Entry (clouds)  ->  Home  |  Live  |  Trends  |  Accuracy  |  Health
-
-IMPORTANT: every data / model / database line below is copied UNCHANGED from the original app.py
-(secrets, MongoDB, WAQI + Open-Meteo links, CPCB formula, Excel loader, model loading, predict + MongoDB logging).
-Only the presentation layer (layout, CSS, charts, images, navigation) is new.
 """
 import streamlit as st
 import pandas as pd
