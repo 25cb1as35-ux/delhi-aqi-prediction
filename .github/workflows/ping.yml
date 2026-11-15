@@ -1,0 +1,10 @@
+name: Hourly Ping
+on:
+  schedule:
+    - cron: '0 * * * *'
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping App
+        run: curl -s https://delhi-aqi-prediction-hgdfl3ovno2qp4qxog5amj.streamlit.app/ > /dev/null
